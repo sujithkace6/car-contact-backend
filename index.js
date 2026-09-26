@@ -12,6 +12,9 @@ const VALID_VEHICLE_PAIRINGS = {
   MH01BF9381: ["22223333"],
 };
 
+const NEARBY_RADIUS_METERS = 10;
+const OUT_OF_RANGE_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 const vehicles = [];
 const familyMembers = [];
 
@@ -47,6 +50,27 @@ function publicVehicle(vehicle) {
   return rest;
 }
 
+function distanceMeters(a, b) {
+  const R = 6371000;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLon = Math.sin(dLon / 2);
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLon * sinDLon;
+  const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  return R * c;
+}
+
+function checkWithinRange(vehicle, latitude, longitude) {
+  if (!vehicle.parkedLocation || typeof latitude !== "number" || typeof longitude !== "number") {
+    return true; // no known parked location — don't block on distance we can't verify
+  }
+  return distanceMeters(vehicle.parkedLocation, { latitude, longitude }) <= NEARBY_RADIUS_METERS;
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -62,14 +86,92 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { status: "Backend is running." });
   }
 
-  if (req.url === "/contact-owner" && req.method === "POST") {
+  if (req.url === "/identify-vehicle" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const { vehicleId } = body;
+      const { pairingCode, latitude, longitude } = body;
+
+      if (!pairingCode) {
+        return sendJson(res, 400, { success: false, error: "pairingCode is required." });
+      }
+
+      const vehicle = vehicles.find((v) => v.pairingCode === pairingCode);
+      if (!vehicle) {
+        return sendJson(res, 404, { success: false, error: "This tag isn't registered to any vehicle." });
+      }
+
+      const withinRange = checkWithinRange(vehicle, latitude, longitude);
+
+      let callAvailable = true;
+      let callRetryAt = null;
+      if (!withinRange && vehicle.lastOutOfRangeCallAt) {
+        const elapsed = Date.now() - new Date(vehicle.lastOutOfRangeCallAt).getTime();
+        if (elapsed < OUT_OF_RANGE_COOLDOWN_MS) {
+          callAvailable = false;
+          callRetryAt = new Date(new Date(vehicle.lastOutOfRangeCallAt).getTime() + OUT_OF_RANGE_COOLDOWN_MS).toISOString();
+        }
+      }
+
+      return sendJson(res, 200, {
+        success: true,
+        vehicleId: vehicle.id,
+        vehicleName: vehicle.name,
+        withinRange,
+        callAvailable,
+        callRetryAt,
+      });
+    } catch (error) {
+      console.error("identify-vehicle error:", error.message);
+      return sendJson(res, 500, { success: false, error: "Could not identify vehicle." });
+    }
+  }
+
+  const contactMatch = req.url.match(/^\/vehicles\/([^/]+)\/contact$/);
+  if (contactMatch && req.method === "POST") {
+    try {
+      const vehicleId = contactMatch[1];
+      const body = await readJsonBody(req);
+      const { action, userPhoneNumber, latitude, longitude } = body;
 
       const vehicle = vehicles.find((v) => v.id === vehicleId);
       if (!vehicle) {
-        return sendJson(res, 404, { success: false, message: "Vehicle not found." });
+        return sendJson(res, 404, { success: false, error: "Vehicle not found." });
+      }
+
+      if (action !== "call" && action !== "emergency") {
+        return sendJson(res, 400, { success: false, error: "action must be 'call' or 'emergency'." });
+      }
+
+      const withinRange = checkWithinRange(vehicle, latitude, longitude);
+
+      if (action === "emergency") {
+        if (!withinRange) {
+          return sendJson(res, 403, {
+            success: false,
+            error: "You must be within 10 meters of the vehicle to send an emergency alert.",
+          });
+        }
+
+        // Emergency bypasses the notifications toggle since it's urgent.
+        await client.messages.create({
+          to: vehicle.ownerPhoneNumber,
+          from: process.env.TWILIO_PHONE_NUMBER,
+          body: `EMERGENCY regarding your vehicle ${vehicle.name} (${vehicle.vehicleNumber}). Please call this number immediately: ${userPhoneNumber || "not provided"}`,
+        });
+        return sendJson(res, 200, { success: true, message: "Emergency SMS sent to the owner." });
+      }
+
+      // action === "call"
+      if (!withinRange) {
+        if (vehicle.lastOutOfRangeCallAt) {
+          const elapsed = Date.now() - new Date(vehicle.lastOutOfRangeCallAt).getTime();
+          if (elapsed < OUT_OF_RANGE_COOLDOWN_MS) {
+            return sendJson(res, 403, {
+              success: false,
+              error: "Only one call per day is allowed from this distance for this vehicle. Please try again later.",
+            });
+          }
+        }
       }
 
       if (!vehicle.notificationsEnabled) {
@@ -79,15 +181,19 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      if (!withinRange) {
+        vehicle.lastOutOfRangeCallAt = new Date().toISOString();
+      }
+
       await client.calls.create({
         to: vehicle.ownerPhoneNumber,
         from: process.env.TWILIO_PHONE_NUMBER,
         twiml: "<Response><Say>Someone needs you at your car.</Say></Response>",
       });
-      return sendJson(res, 200, { success: true, message: "Owner contact request received!" });
+      return sendJson(res, 200, { success: true, message: "Owner is being called now." });
     } catch (error) {
-      console.error("Twilio error:", error.message);
-      return sendJson(res, 500, { success: false, message: "Could not call the owner." });
+      console.error("contact error:", error.message);
+      return sendJson(res, 500, { success: false, error: "Could not complete this action." });
     }
   }
 
@@ -195,6 +301,7 @@ const server = http.createServer(async (req, res) => {
         parkedAt: null,
         parkedLocation: null,
         notificationsEnabled: false,
+        lastOutOfRangeCallAt: null,
       };
       vehicles.push(vehicle);
 
@@ -235,6 +342,7 @@ const server = http.createServer(async (req, res) => {
       vehicle.parkedAt = new Date().toISOString();
       vehicle.parkedLocation = { latitude, longitude };
       vehicle.notificationsEnabled = true; // default ON whenever a park scan succeeds
+      vehicle.lastOutOfRangeCallAt = null; // fresh session at the new spot
 
       const mapsLink = `https://www.google.com/maps?q=${latitude},${longitude}`;
       try {
@@ -270,6 +378,7 @@ const server = http.createServer(async (req, res) => {
       vehicle.parkedAt = null;
       vehicle.parkedLocation = null;
       vehicle.notificationsEnabled = false;
+      vehicle.lastOutOfRangeCallAt = null;
 
       return sendJson(res, 200, { success: true });
     } catch (error) {
