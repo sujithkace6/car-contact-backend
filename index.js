@@ -39,7 +39,7 @@ function sendJson(res, statusCode, obj) {
   res.writeHead(statusCode, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   });
   res.end(JSON.stringify(obj));
@@ -75,7 +75,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     });
     res.end();
@@ -321,6 +321,17 @@ const server = http.createServer(async (req, res) => {
       : vehicles;
 
     return sendJson(res, 200, { success: true, vehicles: filtered.map(publicVehicle) });
+  }
+
+  const deleteVehicleMatch = req.url.match(/^\/vehicles\/([^/]+)$/);
+  if (deleteVehicleMatch && req.method === "DELETE") {
+    const vehicleId = deleteVehicleMatch[1];
+    const index = vehicles.findIndex((v) => v.id === vehicleId);
+    if (index === -1) {
+      return sendJson(res, 404, { success: false, error: "Vehicle not found." });
+    }
+    vehicles.splice(index, 1);
+    return sendJson(res, 200, { success: true });
   }
 
   const parkMatch = req.url.match(/^\/vehicles\/([^/]+)\/park$/);
