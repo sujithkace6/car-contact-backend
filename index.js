@@ -42,6 +42,11 @@ function sendJson(res, statusCode, obj) {
   res.end(JSON.stringify(obj));
 }
 
+function publicVehicle(vehicle) {
+  const { pairingCode, ...rest } = vehicle;
+  return rest;
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -171,10 +176,14 @@ const server = http.createServer(async (req, res) => {
         name,
         vehicleNumber: vehicleNumber.toUpperCase(),
         ownerPhoneNumber,
+        pairingCode,
+        parkedAt: null,
+        parkedLocation: null,
+        notificationsEnabled: false,
       };
       vehicles.push(vehicle);
 
-      return sendJson(res, 200, { success: true, vehicle });
+      return sendJson(res, 200, { success: true, vehicle: publicVehicle(vehicle) });
     } catch (error) {
       console.error("save vehicle error:", error.message);
       return sendJson(res, 500, { success: false, error: "Could not save vehicle." });
@@ -189,7 +198,58 @@ const server = http.createServer(async (req, res) => {
       ? vehicles.filter((v) => v.ownerPhoneNumber === phoneNumber)
       : vehicles;
 
-    return sendJson(res, 200, { success: true, vehicles: filtered });
+    return sendJson(res, 200, { success: true, vehicles: filtered.map(publicVehicle) });
+  }
+
+  const parkMatch = req.url.match(/^\/vehicles\/([^/]+)\/park$/);
+  if (parkMatch && req.method === "POST") {
+    try {
+      const vehicleId = parkMatch[1];
+      const body = await readJsonBody(req);
+      const { pairingCode, latitude, longitude } = body;
+
+      const vehicle = vehicles.find((v) => v.id === vehicleId);
+      if (!vehicle) {
+        return sendJson(res, 404, { success: false, error: "Vehicle not found." });
+      }
+
+      if (!pairingCode || pairingCode !== vehicle.pairingCode) {
+        return sendJson(res, 403, { success: false, error: "This tag doesn't match this vehicle." });
+      }
+
+      vehicle.parkedAt = new Date().toISOString();
+      vehicle.parkedLocation = { latitude, longitude };
+
+      return sendJson(res, 200, {
+        success: true,
+        parkedAt: vehicle.parkedAt,
+        parkedLocation: vehicle.parkedLocation,
+      });
+    } catch (error) {
+      console.error("park error:", error.message);
+      return sendJson(res, 500, { success: false, error: "Could not mark parking." });
+    }
+  }
+
+  const notificationsMatch = req.url.match(/^\/vehicles\/([^/]+)\/notifications$/);
+  if (notificationsMatch && req.method === "POST") {
+    try {
+      const vehicleId = notificationsMatch[1];
+      const body = await readJsonBody(req);
+      const { enabled } = body;
+
+      const vehicle = vehicles.find((v) => v.id === vehicleId);
+      if (!vehicle) {
+        return sendJson(res, 404, { success: false, error: "Vehicle not found." });
+      }
+
+      vehicle.notificationsEnabled = !!enabled;
+
+      return sendJson(res, 200, { success: true, notificationsEnabled: vehicle.notificationsEnabled });
+    } catch (error) {
+      console.error("notifications error:", error.message);
+      return sendJson(res, 500, { success: false, error: "Could not update notifications." });
+    }
   }
 
   if (req.url === "/family-members" && req.method === "POST") {
