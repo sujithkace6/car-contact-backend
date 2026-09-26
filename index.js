@@ -236,10 +236,20 @@ const server = http.createServer(async (req, res) => {
       vehicle.parkedLocation = { latitude, longitude };
       vehicle.notificationsEnabled = true; // default ON whenever a park scan succeeds
 
+      const mapsLink = `https://www.google.com/maps?q=${latitude},${longitude}`;
+      try {
+        await client.messages.create({
+          to: vehicle.ownerPhoneNumber,
+          from: process.env.TWILIO_PHONE_NUMBER,
+          body: `Your vehicle ${vehicle.name} (${vehicle.vehicleNumber}) was parked here: ${mapsLink}`,
+        });
+      } catch (smsError) {
+        console.error("park SMS error:", smsError.message);
+      }
+
       return sendJson(res, 200, {
         success: true,
         parkedAt: vehicle.parkedAt,
-        parkedLocation: vehicle.parkedLocation,
         notificationsEnabled: vehicle.notificationsEnabled,
       });
     } catch (error) {
