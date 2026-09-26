@@ -431,12 +431,6 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { success: true, familyMembers });
   }
 
-  if (req.url === "/reset-all-data" && req.method === "POST") {
-    vehicles.length = 0;
-    familyMembers.length = 0;
-    return sendJson(res, 200, { success: true, message: "All data cleared." });
-  }
-
   return sendJson(res, 404, { success: false, error: "Not found" });
 });
 
