@@ -64,8 +64,23 @@ const server = http.createServer(async (req, res) => {
 
   if (req.url === "/contact-owner" && req.method === "POST") {
     try {
+      const body = await readJsonBody(req);
+      const { vehicleId } = body;
+
+      const vehicle = vehicles.find((v) => v.id === vehicleId);
+      if (!vehicle) {
+        return sendJson(res, 404, { success: false, message: "Vehicle not found." });
+      }
+
+      if (!vehicle.notificationsEnabled) {
+        return sendJson(res, 200, {
+          success: false,
+          message: "The owner has turned off notifications for this vehicle.",
+        });
+      }
+
       await client.calls.create({
-        to: process.env.OWNER_PHONE_NUMBER,
+        to: vehicle.ownerPhoneNumber,
         from: process.env.TWILIO_PHONE_NUMBER,
         twiml: "<Response><Say>Someone needs you at your car.</Say></Response>",
       });
@@ -219,15 +234,37 @@ const server = http.createServer(async (req, res) => {
 
       vehicle.parkedAt = new Date().toISOString();
       vehicle.parkedLocation = { latitude, longitude };
+      vehicle.notificationsEnabled = true; // default ON whenever a park scan succeeds
 
       return sendJson(res, 200, {
         success: true,
         parkedAt: vehicle.parkedAt,
         parkedLocation: vehicle.parkedLocation,
+        notificationsEnabled: vehicle.notificationsEnabled,
       });
     } catch (error) {
       console.error("park error:", error.message);
       return sendJson(res, 500, { success: false, error: "Could not mark parking." });
+    }
+  }
+
+  const endParkMatch = req.url.match(/^\/vehicles\/([^/]+)\/end-park$/);
+  if (endParkMatch && req.method === "POST") {
+    try {
+      const vehicleId = endParkMatch[1];
+      const vehicle = vehicles.find((v) => v.id === vehicleId);
+      if (!vehicle) {
+        return sendJson(res, 404, { success: false, error: "Vehicle not found." });
+      }
+
+      vehicle.parkedAt = null;
+      vehicle.parkedLocation = null;
+      vehicle.notificationsEnabled = false;
+
+      return sendJson(res, 200, { success: true });
+    } catch (error) {
+      console.error("end-park error:", error.message);
+      return sendJson(res, 500, { success: false, error: "Could not end parking." });
     }
   }
 
