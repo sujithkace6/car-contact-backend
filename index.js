@@ -59,7 +59,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.url === "/contact-owner" && req.method === "POST") {
     try {
-      const call = await client.calls.create({
+      await client.calls.create({
         to: process.env.OWNER_PHONE_NUMBER,
         from: process.env.TWILIO_PHONE_NUMBER,
         twiml: "<Response><Say>Someone needs you at your car.</Say></Response>",
@@ -155,10 +155,10 @@ const server = http.createServer(async (req, res) => {
   if (req.url === "/vehicles" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const { name, vehicleNumber, pairingCode } = body;
+      const { name, vehicleNumber, pairingCode, ownerPhoneNumber } = body;
 
-      if (!name || !vehicleNumber || !pairingCode) {
-        return sendJson(res, 400, { success: false, error: "name, vehicleNumber, and pairingCode are required." });
+      if (!name || !vehicleNumber || !pairingCode || !ownerPhoneNumber) {
+        return sendJson(res, 400, { success: false, error: "name, vehicleNumber, pairingCode, and ownerPhoneNumber are required." });
       }
 
       const validCodes = VALID_VEHICLE_PAIRINGS[vehicleNumber.toUpperCase()] || [];
@@ -166,7 +166,12 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 403, { success: false, error: "Pairing code does not match this vehicle number." });
       }
 
-      const vehicle = { id: String(vehicles.length + 1), name, vehicleNumber: vehicleNumber.toUpperCase() };
+      const vehicle = {
+        id: String(vehicles.length + 1),
+        name,
+        vehicleNumber: vehicleNumber.toUpperCase(),
+        ownerPhoneNumber,
+      };
       vehicles.push(vehicle);
 
       return sendJson(res, 200, { success: true, vehicle });
@@ -176,8 +181,15 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (req.url === "/vehicles" && req.method === "GET") {
-    return sendJson(res, 200, { success: true, vehicles });
+  if (req.url.startsWith("/vehicles") && req.method === "GET") {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const phoneNumber = urlObj.searchParams.get("phoneNumber");
+
+    const filtered = phoneNumber
+      ? vehicles.filter((v) => v.ownerPhoneNumber === phoneNumber)
+      : vehicles;
+
+    return sendJson(res, 200, { success: true, vehicles: filtered });
   }
 
   if (req.url === "/family-members" && req.method === "POST") {
