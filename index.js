@@ -18,6 +18,8 @@ const OUT_OF_RANGE_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const vehicles = [];
 const familyMembers = [];
+const parkingEvents = []; // { id, vehicleId, latitude, longitude, type: "started" | "ended", timestamp }
+const PARKING_EVENT_LIFESPAN_MS = 60 * 60 * 1000; // 1 hour
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -356,6 +358,15 @@ const server = http.createServer(async (req, res) => {
       vehicle.notificationsEnabled = true; // default ON whenever a park scan succeeds
       vehicle.lastOutOfRangeCallAt = null; // fresh session at the new spot
 
+      parkingEvents.push({
+        id: `${vehicleId}-${Date.now()}`,
+        vehicleId,
+        latitude,
+        longitude,
+        type: "started",
+        timestamp: Date.now(),
+      });
+
       const mapsLink = `https://www.google.com/maps?q=${latitude},${longitude}`;
       try {
         await client.messages.create({
@@ -387,6 +398,17 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 404, { success: false, error: "Vehicle not found." });
       }
 
+      if (vehicle.parkedLocation) {
+        parkingEvents.push({
+          id: `${vehicleId}-${Date.now()}`,
+          vehicleId,
+          latitude: vehicle.parkedLocation.latitude,
+          longitude: vehicle.parkedLocation.longitude,
+          type: "ended",
+          timestamp: Date.now(),
+        });
+      }
+
       vehicle.parkedAt = null;
       vehicle.parkedLocation = null;
       vehicle.notificationsEnabled = false;
@@ -397,6 +419,17 @@ const server = http.createServer(async (req, res) => {
       console.error("end-park error:", error.message);
       return sendJson(res, 500, { success: false, error: "Could not end parking." });
     }
+  }
+
+  if (req.url === "/parking-events" && req.method === "GET") {
+    const cutoff = Date.now() - PARKING_EVENT_LIFESPAN_MS;
+    // Prune old events in place so the array doesn't grow forever.
+    for (let i = parkingEvents.length - 1; i >= 0; i--) {
+      if (parkingEvents[i].timestamp < cutoff) {
+        parkingEvents.splice(i, 1);
+      }
+    }
+    return sendJson(res, 200, { success: true, events: parkingEvents });
   }
 
   const notificationsMatch = req.url.match(/^\/vehicles\/([^/]+)\/notifications$/);
