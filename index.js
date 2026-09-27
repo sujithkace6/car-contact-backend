@@ -1,7 +1,41 @@
 require("dotenv").config();
 
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const twilio = require("twilio");
+
+// Simple file-based persistence so data survives a normal process restart.
+// NOTE: Render's free tier has no persistent disk, so a full spin-down
+// (the container itself being torn down after ~15 min idle, or a fresh
+// deploy) still wipes this file along with everything else. This only
+// helps for in-process restarts that don't recreate the container.
+const DATA_FILE = path.join(__dirname, "data.json");
+
+function loadData() {
+  try {
+    const raw = fs.readFileSync(DATA_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      vehicles: parsed.vehicles || [],
+      familyMembers: parsed.familyMembers || [],
+      parkingEvents: parsed.parkingEvents || [],
+    };
+  } catch (error) {
+    return { vehicles: [], familyMembers: [], parkingEvents: [] };
+  }
+}
+
+function saveData() {
+  try {
+    fs.writeFileSync(
+      DATA_FILE,
+      JSON.stringify({ vehicles, familyMembers, parkingEvents }, null, 2)
+    );
+  } catch (error) {
+    console.error("Could not persist data:", error.message);
+  }
+}
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const verifyServiceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
@@ -16,9 +50,10 @@ const VALID_VEHICLE_PAIRINGS = {
 const NEARBY_RADIUS_METERS = 10;
 const OUT_OF_RANGE_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-const vehicles = [];
-const familyMembers = [];
-const parkingEvents = []; // { id, vehicleId, latitude, longitude, type: "started" | "ended", timestamp }
+const initialData = loadData();
+const vehicles = initialData.vehicles;
+const familyMembers = initialData.familyMembers;
+const parkingEvents = initialData.parkingEvents; // { id, vehicleId, latitude, longitude, type: "started" | "ended", timestamp }
 const PARKING_EVENT_LIFESPAN_MS = 60 * 60 * 1000; // 1 hour
 
 function readJsonBody(req) {
@@ -307,6 +342,7 @@ const server = http.createServer(async (req, res) => {
         lastOutOfRangeCallAt: null,
       };
       vehicles.push(vehicle);
+      saveData();
 
       return sendJson(res, 200, { success: true, vehicle: publicVehicle(vehicle) });
     } catch (error) {
@@ -334,6 +370,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 404, { success: false, error: "Vehicle not found." });
     }
     vehicles.splice(index, 1);
+    saveData();
     return sendJson(res, 200, { success: true });
   }
 
@@ -378,6 +415,8 @@ const server = http.createServer(async (req, res) => {
         console.error("park SMS error:", smsError.message);
       }
 
+      saveData();
+
       return sendJson(res, 200, {
         success: true,
         parkedAt: vehicle.parkedAt,
@@ -413,6 +452,7 @@ const server = http.createServer(async (req, res) => {
       vehicle.parkedLocation = null;
       vehicle.notificationsEnabled = false;
       vehicle.lastOutOfRangeCallAt = null;
+      saveData();
 
       return sendJson(res, 200, { success: true });
     } catch (error) {
@@ -445,6 +485,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       vehicle.notificationsEnabled = !!enabled;
+      saveData();
 
       return sendJson(res, 200, { success: true, notificationsEnabled: vehicle.notificationsEnabled });
     } catch (error) {
@@ -464,6 +505,7 @@ const server = http.createServer(async (req, res) => {
 
       const familyMember = { id: String(familyMembers.length + 1), name, relationship, phoneNumber };
       familyMembers.push(familyMember);
+      saveData();
 
       return sendJson(res, 200, { success: true, familyMember });
     } catch (error) {
