@@ -437,6 +437,13 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 404, { success: false, error: "Vehicle not found." });
       }
 
+      // pairingCode is present when this came from an NFC scan (rather than the
+      // manual "End Park" button) - verify the tag actually belongs to this vehicle.
+      const body = await readJsonBody(req);
+      if (body.pairingCode && body.pairingCode !== vehicle.pairingCode) {
+        return sendJson(res, 403, { success: false, error: "This tag doesn't match this vehicle." });
+      }
+
       if (vehicle.parkedLocation) {
         parkingEvents.push({
           id: `${vehicleId}-${Date.now()}`,
